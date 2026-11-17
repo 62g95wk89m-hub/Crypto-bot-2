@@ -1,0 +1,105 @@
+
+import os
+import json
+import urllib.request
+import urllib.parse
+import ccxt
+
+
+def ema(values, period):
+    alpha = 2 / (period + 1)
+    result = values[0]
+    for value in values[1:]:
+        result = alpha * value + (1 - alpha) * result
+    return result
+
+
+def rsi(values, period=14):
+    changes = [
+        values[i] - values[i - 1]
+        for i in range(1, len(values))
+    ]
+    recent = changes[-period:]
+    gains = [max(x, 0) for x in recent]
+    losses = [max(-x, 0) for x in recent]
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+
+    if avg_loss == 0:
+        return 100.0
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def notify_telegram(message):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        print("Telegram non configurato.")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": chat_id,
+        "text": message
+    }).encode()
+
+    request = urllib.request.Request(url, data=data)
+
+    try:
+        urllib.request.urlopen(request, timeout=15)
+        print("Notifica Telegram inviata.")
+    except Exception as error:
+        print(f"Errore Telegram: {error}")
+
+
+def main():
+    exchange = ccxt.binance({
+        "enableRateLimit": True
+    })
+
+    symbol = os.getenv("SYMBOL", "BTC/EUR")
+
+    candles = exchange.fetch_ohlcv(
+        symbol,
+        timeframe="15m",
+        limit=100
+    )
+
+    # Esclude l'ultima candela, che potrebbe essere ancora aperta.
+    candles = candles[:-1]
+
+    closes = [float(candle[4]) for candle in candles]
+
+    if len(closes) < 50:
+        raise RuntimeError("Dati insufficienti per l'analisi.")
+
+    ema20 = ema(closes[-50:], 20)
+    ema50 = ema(closes[-50:], 50)
+    current_price = closes[-1]
+    current_rsi = rsi(closes, 14)
+
+    if ema20 > ema50 and 50 <= current_rsi <= 65 and current_price > ema20:
+        signal = "POSSIBILE INGRESSO LONG (solo demo)"
+    else:
+        signal = "ATTENDERE - nessun ingresso"
+
+    message = (
+        f"BOT DEMO BTC/EUR\n"
+        f"Prezzo: {current_price:.2f} EUR\n"
+        f"EMA20: {ema20:.2f}\n"
+        f"EMA50: {ema50:.2f}\n"
+        f"RSI14: {current_rsi:.2f}\n"
+        f"Segnale: {signal}\n"
+        f"Nessun ordine reale eseguito."
+    )
+
+    print(message)
+    notify_telegram(message)
+
+
+if __name__ == "__main__":
+    main()
